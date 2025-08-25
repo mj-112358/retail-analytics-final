@@ -1,0 +1,49 @@
+version: '3.8'
+
+services:
+  # Backend Service
+  retail-analytics-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.final.production
+    container_name: retail-analytics-backend
+    ports:
+      - "3000:3000"  # Fixed: Backend should be on port 3000, not 8080
+    environment:
+      - PORT=3000
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-your-openai-key-here}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-jwt-secret-key-here}
+    volumes:
+      - ./data:/app/data  # Persist SQLite database
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - retail-analytics
+
+  # Frontend Service (for local development)
+  retail-analytics-frontend:
+    build:
+      context: ./project\ 5
+      dockerfile: ../Dockerfile.frontend
+    container_name: retail-analytics-frontend
+    ports:
+      - "5173:80"  # Frontend on port 5173 (or 80 for nginx)
+    environment:
+      - VITE_API_URL=http://localhost:3000
+    depends_on:
+      - retail-analytics-backend
+    networks:
+      - retail-analytics
+
+networks:
+  retail-analytics:
+    driver: bridge
+
+volumes:
+  retail-analytics-data:
+    driver: local

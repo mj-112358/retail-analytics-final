@@ -1,0 +1,58 @@
+# Environment files with secrets - NEVER COMMIT THESE
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# YOLO model files
+*.pt
+*.weights
+
+# Node modules
+node_modules/
+npm-debug.log*
+
+# Build output
+dist/
+build/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Local Netlify folder
+.netlify
+
+# Temporary files
+*.tmp
+*.temp
+
+# Archives
+*.zip
+*.tar.gz
+regroup_project.zip
+yolov3.weights.2

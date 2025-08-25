@@ -1,0 +1,55 @@
+# FINAL PRODUCTION DOCKERFILE
+# Complete retail analytics system ready for customers
+
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /app
+
+# Install system dependencies for OpenCV and other libraries
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libgtk-3-0 \
+    libavcodec-dev \
+    libavformat-dev \
+    libswscale-dev \
+    libgstreamer1.0-dev \
+    libgstreamer-plugins-base1.0-dev \
+    libgtk2.0-dev \
+    pkg-config \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install YOLO weights - download to app directory where the model expects it
+RUN wget -q -O /app/yolov8n.pt https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt requirements.txt
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application files
+COPY . .
+
+# Create necessary directories
+RUN mkdir -p /app/logs
+RUN chmod +x /app/database/schema_final.sql || true
+
+# Expose port - Railway will set PORT environment variable
+EXPOSE 8000
+
+# Health check using curl
+# Railway handles healthcheck, remove Docker healthcheck to avoid conflicts
+# HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
+#     CMD curl -f http://127.0.0.1:${PORT}/health || exit 1
+
+# Start command - use main production app
+CMD ["sh", "-c", "uvicorn main_final:app --host 0.0.0.0 --port ${PORT} --workers 1 --log-level info"]

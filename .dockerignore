@@ -1,0 +1,82 @@
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Documentation
+README*.md
+*.md
+DEPLOYMENT_GUIDE.md
+INTEGRATION_GUIDE.md
+BUSINESS_READINESS_CHECKLIST.md
+AXIOS_INTEGRATION_GUIDE.md
+PRODUCTION_DEPLOYMENT.md
+PROJECT_SUMMARY.md
+FINAL_COMPREHENSIVE_REPORT.md
+
+# Development files
+.env.local
+.env.development
+.env.test
+# .env and .env.production needed for Docker builds
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+footfall_log.jsonl
+
+# Temporary files
+*.tmp
+*.temp
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Node.js (for frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Heroku specific
+Procfile
+Aptfile
+app.json
+heroku_requirements.txt
+heroku_api_server.py
+
+# Large files that should be downloaded at runtime
+# yolov8n.pt  # Uncomment if you want to exclude the model file
+
+# Test files
+tests/
+# test_*.py  # Commented out - some test files needed for production
+*_test.py
+
+# Backup files
+*.bak
+*.backup 

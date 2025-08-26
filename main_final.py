@@ -46,17 +46,17 @@ if OPENAI_API_KEY == "your-openai-key-here":
 # Initialize YOLO model as None - will load on first use
 model = None
 
-# COCO class names mapping for YOLO detection
-COCO_CLASSES = {
-    "person": 0, "bicycle": 1, "car": 2, "motorcycle": 3, "airplane": 4, "bus": 5,
-    "train": 6, "truck": 7, "boat": 8, "traffic_light": 9, "fire_hydrant": 10,
-    "stop_sign": 11, "parking_meter": 12, "bench": 13, "bird": 14, "cat": 15,
-    "dog": 16, "horse": 17, "sheep": 18, "cow": 19, "elephant": 20, "bear": 21,
-    "zebra": 22, "giraffe": 23, "backpack": 24, "umbrella": 25, "handbag": 26,
-    "tie": 27, "suitcase": 28, "frisbee": 29, "skis": 30, "snowboard": 31,
-    "sports_ball": 32, "kite": 33, "baseball_bat": 34, "baseball_glove": 35,
-    "skateboard": 36, "surfboard": 37, "tennis_racket": 38, "bottle": 39,
-    "wine_glass": 40, "cup": 41, "fork": 42, "knife": 43, "spoon": 44, "bowl": 45
+# Retail zone types for better analytics
+ZONE_TYPES = {
+    "entrance": "Store Entrance/Exit",
+    "checkout": "Checkout/Payment Area", 
+    "dairy_section": "Dairy Section",
+    "electronics": "Electronics Department",
+    "clothing": "Clothing Department",
+    "grocery": "Grocery Aisles",
+    "pharmacy": "Pharmacy Counter",
+    "customer_service": "Customer Service Area",
+    "general": "General Store Area"
 }
 
 def get_yolo_model():
@@ -135,18 +135,18 @@ class UserLogin(BaseModel):
 class CameraCreate(BaseModel):
     name: str
     rtsp_url: str
-    zone_type: str
+    zone_type: str  # entrance, dairy_section, checkout, electronics, etc.
     location_description: Optional[str] = None
-    detection_classes: Optional[List[str]] = ["person"]  # Objects to detect: person, car, bicycle, dog, cat, etc.
-    confidence_threshold: Optional[float] = 0.7  # Detection confidence threshold
 
 class InsightRequest(BaseModel):
     period_start: Optional[str] = None
     period_end: Optional[str] = None
-    insight_type: str = "comprehensive"
+    insight_type: str = "general"  # general, promo_effectiveness, festival_spike
     include_promo: bool = False
     promo_start: Optional[str] = None
     promo_end: Optional[str] = None
+    promo_name: Optional[str] = None
+    festival_name: Optional[str] = None
 
 # Database Setup
 async def init_database():
@@ -174,7 +174,7 @@ async def init_database():
             )
         """)
         
-        # Cameras table
+        # Cameras table - focused on retail zone management
         await db.execute("""
             CREATE TABLE IF NOT EXISTS cameras (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -185,22 +185,10 @@ async def init_database():
                 location_description TEXT,
                 status TEXT DEFAULT 'offline',
                 is_active BOOLEAN DEFAULT TRUE,
-                detection_classes TEXT DEFAULT '["person"]',
-                confidence_threshold REAL DEFAULT 0.7,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_detection_at TIMESTAMP
             )
         """)
-        
-        # Add detection configuration columns if they don't exist
-        try:
-            await db.execute("ALTER TABLE cameras ADD COLUMN detection_classes TEXT DEFAULT '[\"person\"]'")
-        except:
-            pass  # Column already exists
-        try:
-            await db.execute("ALTER TABLE cameras ADD COLUMN confidence_threshold REAL DEFAULT 0.7")
-        except:
-            pass  # Column already exists
         
         # Visitors table for tracking detections
         await db.execute("""
@@ -401,28 +389,18 @@ class RTSPProcessor:
             decoded_url = urllib.parse.unquote(rtsp_url)
             logger.info(f"🎥 Starting RTSP processing for camera {camera_id}")
             
-            # Get camera configuration from database
+            # Get camera zone information for analytics
             async with aiosqlite.connect(DB_PATH) as db:
                 db.row_factory = aiosqlite.Row
                 cursor = await db.execute(
-                    "SELECT detection_classes, confidence_threshold FROM cameras WHERE id = ?",
+                    "SELECT zone_type, name FROM cameras WHERE id = ?",
                     (camera_id,)
                 )
-                camera_config = await cursor.fetchone()
+                camera_info = await cursor.fetchone()
+                zone_type = camera_info['zone_type'] if camera_info else 'general'
+                camera_name = camera_info['name'] if camera_info else f'Camera {camera_id}'
                 
-                # Parse detection configuration
-                if camera_config:
-                    detection_classes_names = json.loads(camera_config['detection_classes'])
-                    confidence_threshold = camera_config['confidence_threshold']
-                else:
-                    detection_classes_names = ["person"]
-                    confidence_threshold = 0.7
-                
-                # Convert class names to indices
-                detection_classes = [COCO_CLASSES.get(class_name.lower(), 0) for class_name in detection_classes_names]
-                detection_classes = list(set(detection_classes))  # Remove duplicates
-                
-                logger.info(f"Camera {camera_id} detecting: {detection_classes_names} (indices: {detection_classes})")
+                logger.info(f"🎯 Starting people detection for {camera_name} in {zone_type} zone")
             
                 # Update camera status to online
                 await db.execute(
@@ -447,8 +425,8 @@ class RTSPProcessor:
                 if frame_count % 30 != 0:
                     continue
                 
-                # Run YOLO detection with configured classes
-                results = yolo_model(frame, classes=detection_classes)
+                # Run YOLO detection for people only (class 0 = person)
+                results = yolo_model(frame, classes=[0])
                 
                 detections = []
                 for result in results:
@@ -456,16 +434,13 @@ class RTSPProcessor:
                     if boxes is not None:
                         for box in boxes:
                             conf = box.conf.cpu().numpy()[0]
-                            cls = int(box.cls.cpu().numpy()[0])
-                            if conf > confidence_threshold:  # Use configured confidence threshold
+                            if conf > 0.7:  # People detection confidence threshold
                                 x1, y1, x2, y2 = box.xyxy.cpu().numpy()[0]
-                                # Get class name from COCO classes
-                                class_name = next((name for name, idx in COCO_CLASSES.items() if idx == cls), "unknown")
                                 detections.append({
                                     'bbox': [x1, y1, x2, y2],
                                     'confidence': conf,
-                                    'class': class_name,
-                                    'class_id': cls
+                                    'zone_type': zone_type,
+                                    'timestamp': datetime.now()
                                 })
                 
                 # Store detection data
@@ -489,37 +464,49 @@ class RTSPProcessor:
                 )
                 await db.commit()
     
+    def estimate_dwell_time(self, zone_type: str) -> int:
+        """Estimate dwell time based on zone type (in seconds)"""
+        zone_dwell_estimates = {
+            'entrance': 30,        # Quick pass-through
+            'checkout': 180,       # 3 minutes checkout process
+            'dairy_section': 120,  # 2 minutes browsing
+            'electronics': 300,    # 5 minutes comparing products
+            'clothing': 240,       # 4 minutes trying/selecting
+            'grocery': 90,         # 1.5 minutes per aisle
+            'pharmacy': 150,       # 2.5 minutes consultation
+            'customer_service': 600,  # 10 minutes service
+            'general': 120         # 2 minutes default
+        }
+        return zone_dwell_estimates.get(zone_type, 120)
+    
     async def store_detection_data(self, camera_id: int, store_id: int, detections: List[Dict]):
-        """Store detection data in database"""
+        """Store retail analytics detection data"""
         now = datetime.now()
         today = now.date()
         hour = now.hour
         
-        # Count persons only for visitor tracking
-        person_count = len([d for d in detections if d['class'] == 'person'])
+        person_count = len(detections)  # All detections are people
+        if person_count == 0:
+            return
         
         try:
             async with aiosqlite.connect(DB_PATH) as db:
-                # Store visitor data (persons only)
-                for i in range(person_count):
+                # Get zone type from first detection
+                zone_type = detections[0]['zone_type']
+                
+                # Store individual visitors for unique tracking
+                for i, detection in enumerate(detections):
                     visitor_uuid = str(uuid.uuid4())
+                    
+                    # Estimate dwell time based on zone type
+                    estimated_dwell = self.estimate_dwell_time(zone_type)
+                    
                     await db.execute("""
-                        INSERT OR IGNORE INTO visitors (
+                        INSERT INTO visitors (
                             store_id, camera_id, visitor_uuid, first_seen_at, 
                             last_seen_at, zone_type, date, total_dwell_time_seconds
-                        ) VALUES (?, ?, ?, ?, ?, 'general', ?, 60)
-                    """, (store_id, camera_id, visitor_uuid, now, now, today))
-                
-                # Store all detections in a separate table for analytics
-                for detection in detections:
-                    await db.execute("""
-                        INSERT OR IGNORE INTO detections (
-                            store_id, camera_id, detection_time, object_class, 
-                            confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (store_id, camera_id, now, detection['class'], detection['confidence'],
-                          detection['bbox'][0], detection['bbox'][1], 
-                          detection['bbox'][2], detection['bbox'][3]))
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (store_id, camera_id, visitor_uuid, now, now, zone_type, today, estimated_dwell))
                 
                 # Update hourly analytics
                 await db.execute("""
@@ -719,15 +706,11 @@ async def create_camera(
         
         store_id = store[0]
         
-        # Create camera with detection configuration
-        import json
-        detection_classes_json = json.dumps(camera.detection_classes)
+        # Create camera for retail analytics
         cursor = await db.execute("""
-            INSERT INTO cameras (store_id, name, rtsp_url, zone_type, location_description, 
-                               detection_classes, confidence_threshold, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'starting')
-        """, (store_id, camera.name, camera.rtsp_url, camera.zone_type, 
-              camera.location_description, detection_classes_json, camera.confidence_threshold))
+            INSERT INTO cameras (store_id, name, rtsp_url, zone_type, location_description, status)
+            VALUES (?, ?, ?, ?, ?, 'starting')
+        """, (store_id, camera.name, camera.rtsp_url, camera.zone_type, camera.location_description))
         
         camera_id = cursor.lastrowid
         await db.commit()
@@ -934,7 +917,8 @@ async def generate_insights(
         avg_dwell_time = metrics['avg_dwell_time'] or 0
         active_days = metrics['active_days'] or 1
         
-        prompt = f"""
+        # Build analysis prompt based on insight type
+        base_prompt = f"""
 You are a retail analytics expert analyzing store performance. Provide actionable insights and recommendations.
 
 STORE PERFORMANCE DATA:
@@ -949,18 +933,45 @@ ZONE PERFORMANCE:
 
 PEAK HOURS:
 {peak_hours_data}
+"""
 
-{'PROMOTION ANALYSIS:' if request.include_promo else ''}
-{f'- Promotion Period: {request.promo_start} to {request.promo_end}' if request.include_promo and request.promo_start else ''}
-{f'- Compare performance during promotion vs normal periods' if request.include_promo else ''}
+        if request.insight_type == "promo_effectiveness" and request.include_promo:
+            prompt = base_prompt + f"""
+PROMOTION ANALYSIS FOCUS:
+- Promotion: {request.promo_name or 'Unnamed Promotion'}
+- Promotion Period: {request.promo_start} to {request.promo_end}
+- Compare performance during promotion vs normal periods
+- Analyze visitor increase, dwell time changes, zone-wise impact
 
-ANALYSIS REQUIREMENTS:
+SPECIFIC ANALYSIS REQUIREMENTS:
+1. Promotion Performance: ROI and visitor increase metrics
+2. Zone Impact: Which zones benefited most from the promotion
+3. Customer Behavior Changes: Dwell time and engagement during promo
+4. Timing Effectiveness: Were peak hours different during promotion?
+5. Future Recommendations: How to improve next promotional campaigns
+"""
+        elif request.insight_type == "festival_spike" and request.include_promo:
+            prompt = base_prompt + f"""
+FESTIVAL SPIKE ANALYSIS FOCUS:
+- Festival/Event: {request.festival_name or 'Festival Period'}
+- Event Period: {request.promo_start} to {request.promo_end}
+- Analyze traffic spikes, capacity handling, operational challenges
+
+SPECIFIC ANALYSIS REQUIREMENTS:
+1. Traffic Spike Analysis: Volume increases vs normal days
+2. Capacity Management: How well did zones handle increased traffic
+3. Peak Hour Shifts: Did festival change typical peak patterns?
+4. Operational Readiness: Queue times and service efficiency during spike
+5. Preparation Recommendations: How to better handle future festivals
+"""
+        else:
+            prompt = base_prompt + """
+GENERAL RETAIL ANALYSIS REQUIREMENTS:
 1. Store Performance Overview: Key trends and patterns
-2. Zone Optimization: Which areas need attention
-3. Peak Hours Strategy: Staffing and operational recommendations  
+2. Zone Optimization: Which areas need attention and why
+3. Peak Hours Strategy: Staffing and operational recommendations
 4. Customer Behavior: Dwell time and engagement insights
 5. Actionable Recommendations: 4-5 specific steps to improve performance
-{'6. Promotion Effectiveness: How well did the promotion perform' if request.include_promo else ''}
 
 RESPONSE FORMAT:
 Provide insights as professional analysis with specific data points and practical recommendations.
@@ -1123,18 +1134,15 @@ async def get_camera_features():
         }
     }
 
-@app.get("/cameras/detection-classes")
-async def get_detection_classes():
-    """Get available YOLO detection classes"""
+@app.get("/cameras/zone-types")
+async def get_zone_types():
+    """Get available retail zone types for camera setup"""
     return {
-        "available_classes": list(COCO_CLASSES.keys()),
-        "common_retail_classes": [
-            "person", "bicycle", "car", "motorcycle", "bus", "truck", 
-            "backpack", "handbag", "suitcase", "bottle", "cup", "dog", "cat"
-        ],
-        "class_mapping": COCO_CLASSES,
-        "yolo_available": YOLO_AVAILABLE,
-        "opencv_available": CV2_AVAILABLE
+        "zone_types": ZONE_TYPES,
+        "recommended_zones": [
+            "entrance", "checkout", "dairy_section", "electronics", 
+            "clothing", "grocery", "general"
+        ]
     }
 
 @app.post("/test-rtsp")
@@ -1297,19 +1305,19 @@ async def get_promotions(
         
         return [dict(row) for row in promotions]
 
-@app.get("/cameras/{camera_id}/detections")
-async def get_camera_detections(
+@app.get("/cameras/{camera_id}/analytics")
+async def get_camera_analytics(
     camera_id: int,
     hours: int = 24,
     current_user: dict = Depends(get_current_user)
 ):
-    """Get recent detections for a camera"""
+    """Get recent visitor analytics for a camera"""
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         
         # Verify camera belongs to user's store
         cursor = await db.execute("""
-            SELECT c.id FROM cameras c
+            SELECT c.id, c.name, c.zone_type FROM cameras c
             JOIN stores s ON c.store_id = s.id
             WHERE c.id = ? AND s.user_id = ?
         """, (camera_id, current_user['id']))
@@ -1317,36 +1325,32 @@ async def get_camera_detections(
         if not camera:
             raise HTTPException(status_code=404, detail="Camera not found")
         
-        # Get detections from the last X hours
+        # Get visitor analytics from the last X hours
         since = datetime.now() - timedelta(hours=hours)
         cursor = await db.execute("""
-            SELECT object_class, COUNT(*) as count, 
-                   AVG(confidence) as avg_confidence,
-                   MIN(detection_time) as first_seen,
-                   MAX(detection_time) as last_seen
-            FROM detections 
-            WHERE camera_id = ? AND detection_time >= ?
-            GROUP BY object_class
-            ORDER BY count DESC
+            SELECT 
+                COUNT(DISTINCT visitor_uuid) as unique_visitors,
+                COUNT(*) as total_detections,
+                AVG(total_dwell_time_seconds) as avg_dwell_time,
+                MIN(first_seen_at) as first_visitor,
+                MAX(last_seen_at) as last_visitor
+            FROM visitors 
+            WHERE camera_id = ? AND first_seen_at >= ?
         """, (camera_id, since))
         
-        detections = await cursor.fetchall()
+        analytics = await cursor.fetchone()
         
         return {
             "camera_id": camera_id,
+            "camera_name": camera['name'],
+            "zone_type": camera['zone_type'],
             "period_hours": hours,
             "since": since.isoformat(),
-            "detection_summary": [
-                {
-                    "object_class": d['object_class'],
-                    "count": d['count'],
-                    "avg_confidence": round(d['avg_confidence'], 3),
-                    "first_seen": d['first_seen'],
-                    "last_seen": d['last_seen']
-                }
-                for d in detections
-            ],
-            "total_detections": sum(d['count'] for d in detections)
+            "unique_visitors": analytics['unique_visitors'] or 0,
+            "total_detections": analytics['total_detections'] or 0,
+            "avg_dwell_time_minutes": round((analytics['avg_dwell_time'] or 0) / 60, 1),
+            "first_visitor": analytics['first_visitor'],
+            "last_visitor": analytics['last_visitor']
         }
 
 @app.get("/api/system/health")

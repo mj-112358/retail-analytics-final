@@ -43,13 +43,13 @@ COPY . .
 RUN mkdir -p /app/logs
 RUN chmod +x /app/database/schema_final.sql || true
 
-# Expose port - Railway will set PORT environment variable
-EXPOSE 8000
+# Expose port - Railway will set PORT environment variable to 3000
+EXPOSE 3000
 
 # Health check using curl
 # Railway handles healthcheck, remove Docker healthcheck to avoid conflicts
 # HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=5 \
 #     CMD curl -f http://127.0.0.1:${PORT}/health || exit 1
 
-# Start command - use main production app
-CMD ["sh", "-c", "uvicorn main_final:app --host 0.0.0.0 --port ${PORT} --workers 1 --log-level info"]
+# Start command - use main production app with proper PORT variable expansion
+CMD sh -c "uvicorn main_final:app --host 0.0.0.0 --port ${PORT:-3000} --workers 1 --log-level info"

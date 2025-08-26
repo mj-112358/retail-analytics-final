@@ -13,9 +13,9 @@ from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, Re
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, field_validator
-import cv2
+# import cv2  # Commented out to avoid Docker segfault
 import numpy as np
-from ultralytics import YOLO
+# from ultralytics import YOLO  # Commented out to avoid Docker segfault
 import sqlite3
 import aiosqlite
 import bcrypt
@@ -40,13 +40,24 @@ openai.api_key = OPENAI_API_KEY
 if OPENAI_API_KEY == "your-openai-key-here":
     logger.warning("⚠️ OpenAI API key not set! Set OPENAI_API_KEY environment variable for AI insights.")
 
-# Load YOLO model
-try:
-    model = YOLO('yolov8n.pt')
-    logger.info("✅ YOLO model loaded successfully")
-except Exception as e:
-    logger.error(f"❌ Failed to load YOLO model: {e}")
-    model = None
+# Initialize YOLO model as None - will load on first use
+model = None
+
+def get_yolo_model():
+    """Lazy load YOLO model to avoid startup crashes"""
+    global model
+    if model is None:
+        try:
+            import os
+            os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+            os.environ['DISPLAY'] = ':99'
+            from ultralytics import YOLO
+            model = YOLO('yolov8n.pt')
+            logger.info("✅ YOLO model loaded successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to load YOLO model: {e}")
+            model = "failed"  # Mark as failed to avoid retrying
+    return model if model != "failed" else None
 
 # Create FastAPI app
 app = FastAPI(

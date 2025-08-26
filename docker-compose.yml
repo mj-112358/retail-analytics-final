@@ -8,11 +8,14 @@ services:
       dockerfile: Dockerfile.final.production
     container_name: retail-analytics-backend
     ports:
-      - "3000:3000"  # Fixed: Backend should be on port 3000, not 8080
+      - "3000:3000"  # Backend on port 3000 to match Railway and frontend
     environment:
       - PORT=3000
       - OPENAI_API_KEY=${OPENAI_API_KEY:-your-openai-key-here}
       - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-jwt-secret-key-here}
+      - DISPLAY=:99
+      - QT_QPA_PLATFORM=offscreen
+      - MPLBACKEND=Agg
     volumes:
       - ./data:/app/data  # Persist SQLite database
     healthcheck:
@@ -25,20 +28,9 @@ services:
     networks:
       - retail-analytics
 
-  # Frontend Service (for local development)
-  retail-analytics-frontend:
-    build:
-      context: ./project\ 5
-      dockerfile: ../Dockerfile.frontend
-    container_name: retail-analytics-frontend
-    ports:
-      - "5173:80"  # Frontend on port 5173 (or 80 for nginx)
-    environment:
-      - VITE_API_URL=http://localhost:3000
-    depends_on:
-      - retail-analytics-backend
-    networks:
-      - retail-analytics
+  # Frontend Service (for local development) 
+  # Note: Frontend build disabled due to path issues with "project 5" folder name
+  # Run frontend separately or use manual Docker commands
 
 networks:
   retail-analytics:

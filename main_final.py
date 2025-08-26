@@ -794,27 +794,32 @@ async def generate_insights(
         
         peak_hours = await cursor.fetchall()
         
-        # Create comprehensive prompt
+        # Create comprehensive prompt with None handling
         zone_data = "\n".join([
-            f"- {zone['zone_type']}: {zone['unique_visitors']} visitors, "
-            f"{zone['avg_dwell_time']:.1f}s avg dwell, {zone['interactions']} interactions"
+            f"- {zone['zone_type']}: {zone['unique_visitors'] or 0} visitors, "
+            f"{(zone['avg_dwell_time'] or 0):.1f}s avg dwell, {zone['interactions'] or 0} interactions"
             for zone in zone_metrics
         ])
         
         peak_hours_data = ", ".join([
-            f"{hour['hour']:02d}:00 ({hour['avg_visitors']:.1f} visitors)"
+            f"{hour['hour']:02d}:00 ({(hour['avg_visitors'] or 0):.1f} visitors)"
             for hour in peak_hours
         ])
+        
+        # Safe access to metrics with None handling
+        total_visitors = metrics['total_visitors'] or 0
+        avg_dwell_time = metrics['avg_dwell_time'] or 0
+        active_days = metrics['active_days'] or 1
         
         prompt = f"""
 You are a retail analytics expert analyzing store performance. Provide actionable insights and recommendations.
 
 STORE PERFORMANCE DATA:
 - Analysis Period: {start_date} to {end_date} ({(end_date - start_date).days + 1} days)
-- Total Unique Visitors: {metrics['total_visitors']}
-- Average Dwell Time: {metrics['avg_dwell_time']:.1f} seconds ({metrics['avg_dwell_time']/60:.1f} minutes)
-- Active Days: {metrics['active_days']}
-- Daily Average Visitors: {(metrics['total_visitors'] or 0) / max(metrics['active_days'] or 1, 1):.1f}
+- Total Unique Visitors: {total_visitors}
+- Average Dwell Time: {avg_dwell_time:.1f} seconds ({avg_dwell_time/60:.1f} minutes)
+- Active Days: {active_days}
+- Daily Average Visitors: {total_visitors / max(active_days, 1):.1f}
 
 ZONE PERFORMANCE:
 {zone_data}

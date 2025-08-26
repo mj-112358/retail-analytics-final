@@ -13,9 +13,7 @@ from fastapi import FastAPI, HTTPException, Depends, status, BackgroundTasks, Re
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, field_validator
-# import cv2  # Commented out to avoid Docker segfault
 import numpy as np
-# from ultralytics import YOLO  # Commented out to avoid Docker segfault
 import sqlite3
 import aiosqlite
 import bcrypt
@@ -30,6 +28,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# OpenCV and YOLO availability flags - imports deferred to avoid Docker segfaults
+CV2_AVAILABLE = True  # Assume available, will check on first use
+YOLO_AVAILABLE = True  # Assume available, will check on first use
+logger.info("📹 Video processing libraries will be loaded on first use")
+
 # Environment variables
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-openai-key-here")
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "your-secret-key-for-jwt-signing")
@@ -43,21 +46,57 @@ if OPENAI_API_KEY == "your-openai-key-here":
 # Initialize YOLO model as None - will load on first use
 model = None
 
+# COCO class names mapping for YOLO detection
+COCO_CLASSES = {
+    "person": 0, "bicycle": 1, "car": 2, "motorcycle": 3, "airplane": 4, "bus": 5,
+    "train": 6, "truck": 7, "boat": 8, "traffic_light": 9, "fire_hydrant": 10,
+    "stop_sign": 11, "parking_meter": 12, "bench": 13, "bird": 14, "cat": 15,
+    "dog": 16, "horse": 17, "sheep": 18, "cow": 19, "elephant": 20, "bear": 21,
+    "zebra": 22, "giraffe": 23, "backpack": 24, "umbrella": 25, "handbag": 26,
+    "tie": 27, "suitcase": 28, "frisbee": 29, "skis": 30, "snowboard": 31,
+    "sports_ball": 32, "kite": 33, "baseball_bat": 34, "baseball_glove": 35,
+    "skateboard": 36, "surfboard": 37, "tennis_racket": 38, "bottle": 39,
+    "wine_glass": 40, "cup": 41, "fork": 42, "knife": 43, "spoon": 44, "bowl": 45
+}
+
 def get_yolo_model():
     """Lazy load YOLO model to avoid startup crashes"""
-    global model
+    global model, YOLO_AVAILABLE
+    
     if model is None:
         try:
+            # Set environment variables for headless operation
             import os
             os.environ['QT_QPA_PLATFORM'] = 'offscreen'
             os.environ['DISPLAY'] = ':99'
+            os.environ['OPENCV_VIDEOIO_DEBUG'] = '1'
+            
+            # Import YOLO on first use
             from ultralytics import YOLO
+            YOLO_AVAILABLE = True
+            
             model = YOLO('yolov8n.pt')
             logger.info("✅ YOLO model loaded successfully")
+        except ImportError as e:
+            logger.warning(f"⚠️ YOLO not available: {e}")
+            YOLO_AVAILABLE = False
+            model = "failed"
         except Exception as e:
             logger.error(f"❌ Failed to load YOLO model: {e}")
             model = "failed"  # Mark as failed to avoid retrying
     return model if model != "failed" else None
+
+def get_opencv():
+    """Lazy load OpenCV to avoid startup crashes"""
+    global CV2_AVAILABLE
+    try:
+        import cv2
+        CV2_AVAILABLE = True
+        return cv2
+    except ImportError as e:
+        logger.warning(f"⚠️ OpenCV not available: {e}")
+        CV2_AVAILABLE = False
+        return None
 
 # Create FastAPI app
 app = FastAPI(
@@ -98,6 +137,8 @@ class CameraCreate(BaseModel):
     rtsp_url: str
     zone_type: str
     location_description: Optional[str] = None
+    detection_classes: Optional[List[str]] = ["person"]  # Objects to detect: person, car, bicycle, dog, cat, etc.
+    confidence_threshold: Optional[float] = 0.7  # Detection confidence threshold
 
 class InsightRequest(BaseModel):
     period_start: Optional[str] = None
@@ -144,10 +185,22 @@ async def init_database():
                 location_description TEXT,
                 status TEXT DEFAULT 'offline',
                 is_active BOOLEAN DEFAULT TRUE,
+                detection_classes TEXT DEFAULT '["person"]',
+                confidence_threshold REAL DEFAULT 0.7,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_detection_at TIMESTAMP
             )
         """)
+        
+        # Add detection configuration columns if they don't exist
+        try:
+            await db.execute("ALTER TABLE cameras ADD COLUMN detection_classes TEXT DEFAULT '[\"person\"]'")
+        except:
+            pass  # Column already exists
+        try:
+            await db.execute("ALTER TABLE cameras ADD COLUMN confidence_threshold REAL DEFAULT 0.7")
+        except:
+            pass  # Column already exists
         
         # Visitors table for tracking detections
         await db.execute("""
@@ -226,6 +279,23 @@ async def init_database():
                 interaction_type TEXT,
                 product_area TEXT,
                 duration_seconds INTEGER
+            )
+        """)
+        
+        # Detections table for all object detections
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                store_id INTEGER REFERENCES stores(id),
+                camera_id INTEGER REFERENCES cameras(id),
+                detection_time TIMESTAMP NOT NULL,
+                object_class TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                bbox_x1 REAL,
+                bbox_y1 REAL,
+                bbox_x2 REAL,
+                bbox_y2 REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
         
@@ -314,17 +384,47 @@ class RTSPProcessor:
     
     async def process_rtsp_stream(self, camera_id: int, rtsp_url: str, store_id: int):
         """Process RTSP stream and detect persons"""
-        if not model:
-            logger.error("YOLO model not available")
+        # Load OpenCV and YOLO on demand
+        cv2 = get_opencv()
+        if not cv2:
+            logger.error("OpenCV not available - cannot process video streams")
+            return
+            
+        yolo_model = get_yolo_model()
+        if not yolo_model:
+            logger.error("YOLO model not available - detection disabled")
             return
         
         try:
             import urllib.parse
+            import json
             decoded_url = urllib.parse.unquote(rtsp_url)
             logger.info(f"🎥 Starting RTSP processing for camera {camera_id}")
             
-            # Update camera status to online
+            # Get camera configuration from database
             async with aiosqlite.connect(DB_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    "SELECT detection_classes, confidence_threshold FROM cameras WHERE id = ?",
+                    (camera_id,)
+                )
+                camera_config = await cursor.fetchone()
+                
+                # Parse detection configuration
+                if camera_config:
+                    detection_classes_names = json.loads(camera_config['detection_classes'])
+                    confidence_threshold = camera_config['confidence_threshold']
+                else:
+                    detection_classes_names = ["person"]
+                    confidence_threshold = 0.7
+                
+                # Convert class names to indices
+                detection_classes = [COCO_CLASSES.get(class_name.lower(), 0) for class_name in detection_classes_names]
+                detection_classes = list(set(detection_classes))  # Remove duplicates
+                
+                logger.info(f"Camera {camera_id} detecting: {detection_classes_names} (indices: {detection_classes})")
+            
+                # Update camera status to online
                 await db.execute(
                     "UPDATE cameras SET status = 'online', last_detection_at = ? WHERE id = ?",
                     (datetime.now(), camera_id)
@@ -347,8 +447,8 @@ class RTSPProcessor:
                 if frame_count % 30 != 0:
                     continue
                 
-                # Run YOLO detection
-                results = model(frame, classes=[0])  # Class 0 is 'person'
+                # Run YOLO detection with configured classes
+                results = yolo_model(frame, classes=detection_classes)
                 
                 detections = []
                 for result in results:
@@ -356,16 +456,21 @@ class RTSPProcessor:
                     if boxes is not None:
                         for box in boxes:
                             conf = box.conf.cpu().numpy()[0]
-                            if conf > 0.7:  # Confidence threshold
+                            cls = int(box.cls.cpu().numpy()[0])
+                            if conf > confidence_threshold:  # Use configured confidence threshold
                                 x1, y1, x2, y2 = box.xyxy.cpu().numpy()[0]
+                                # Get class name from COCO classes
+                                class_name = next((name for name, idx in COCO_CLASSES.items() if idx == cls), "unknown")
                                 detections.append({
                                     'bbox': [x1, y1, x2, y2],
-                                    'confidence': conf
+                                    'confidence': conf,
+                                    'class': class_name,
+                                    'class_id': cls
                                 })
                 
                 # Store detection data
                 if detections:
-                    await self.store_detection_data(camera_id, store_id, len(detections))
+                    await self.store_detection_data(camera_id, store_id, detections)
                 
                 # Break after processing for a while (configurable for production)
                 if frame_count > 1800:  # Process ~1 minute of video per session
@@ -384,15 +489,18 @@ class RTSPProcessor:
                 )
                 await db.commit()
     
-    async def store_detection_data(self, camera_id: int, store_id: int, person_count: int):
+    async def store_detection_data(self, camera_id: int, store_id: int, detections: List[Dict]):
         """Store detection data in database"""
         now = datetime.now()
         today = now.date()
         hour = now.hour
         
+        # Count persons only for visitor tracking
+        person_count = len([d for d in detections if d['class'] == 'person'])
+        
         try:
             async with aiosqlite.connect(DB_PATH) as db:
-                # Store visitor data
+                # Store visitor data (persons only)
                 for i in range(person_count):
                     visitor_uuid = str(uuid.uuid4())
                     await db.execute("""
@@ -401,6 +509,17 @@ class RTSPProcessor:
                             last_seen_at, zone_type, date, total_dwell_time_seconds
                         ) VALUES (?, ?, ?, ?, ?, 'general', ?, 60)
                     """, (store_id, camera_id, visitor_uuid, now, now, today))
+                
+                # Store all detections in a separate table for analytics
+                for detection in detections:
+                    await db.execute("""
+                        INSERT OR IGNORE INTO detections (
+                            store_id, camera_id, detection_time, object_class, 
+                            confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (store_id, camera_id, now, detection['class'], detection['confidence'],
+                          detection['bbox'][0], detection['bbox'][1], 
+                          detection['bbox'][2], detection['bbox'][3]))
                 
                 # Update hourly analytics
                 await db.execute("""
@@ -600,11 +719,15 @@ async def create_camera(
         
         store_id = store[0]
         
-        # Create camera
+        # Create camera with detection configuration
+        import json
+        detection_classes_json = json.dumps(camera.detection_classes)
         cursor = await db.execute("""
-            INSERT INTO cameras (store_id, name, rtsp_url, zone_type, location_description, status)
-            VALUES (?, ?, ?, ?, ?, 'starting')
-        """, (store_id, camera.name, camera.rtsp_url, camera.zone_type, camera.location_description))
+            INSERT INTO cameras (store_id, name, rtsp_url, zone_type, location_description, 
+                               detection_classes, confidence_threshold, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'starting')
+        """, (store_id, camera.name, camera.rtsp_url, camera.zone_type, 
+              camera.location_description, detection_classes_json, camera.confidence_threshold))
         
         camera_id = cursor.lastrowid
         await db.commit()
@@ -1000,9 +1123,27 @@ async def get_camera_features():
         }
     }
 
+@app.get("/cameras/detection-classes")
+async def get_detection_classes():
+    """Get available YOLO detection classes"""
+    return {
+        "available_classes": list(COCO_CLASSES.keys()),
+        "common_retail_classes": [
+            "person", "bicycle", "car", "motorcycle", "bus", "truck", 
+            "backpack", "handbag", "suitcase", "bottle", "cup", "dog", "cat"
+        ],
+        "class_mapping": COCO_CLASSES,
+        "yolo_available": YOLO_AVAILABLE,
+        "opencv_available": CV2_AVAILABLE
+    }
+
 @app.post("/test-rtsp")
 async def test_rtsp_connection(rtsp_url: str):
     """Test RTSP connection"""
+    cv2 = get_opencv()
+    if not cv2:
+        return {"success": False, "message": "OpenCV not available - cannot test video streams"}
+    
     try:
         import urllib.parse
         decoded_url = urllib.parse.unquote(rtsp_url)
@@ -1012,7 +1153,7 @@ async def test_rtsp_connection(rtsp_url: str):
             ret, frame = cap.read()
             cap.release()
             if ret:
-                return {"success": True, "message": "RTSP connection successful"}
+                return {"success": True, "message": "RTSP connection successful", "yolo_available": YOLO_AVAILABLE}
             else:
                 return {"success": False, "message": "Connected but no frames received"}
         else:
@@ -1156,6 +1297,58 @@ async def get_promotions(
         
         return [dict(row) for row in promotions]
 
+@app.get("/cameras/{camera_id}/detections")
+async def get_camera_detections(
+    camera_id: int,
+    hours: int = 24,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get recent detections for a camera"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        
+        # Verify camera belongs to user's store
+        cursor = await db.execute("""
+            SELECT c.id FROM cameras c
+            JOIN stores s ON c.store_id = s.id
+            WHERE c.id = ? AND s.user_id = ?
+        """, (camera_id, current_user['id']))
+        camera = await cursor.fetchone()
+        if not camera:
+            raise HTTPException(status_code=404, detail="Camera not found")
+        
+        # Get detections from the last X hours
+        since = datetime.now() - timedelta(hours=hours)
+        cursor = await db.execute("""
+            SELECT object_class, COUNT(*) as count, 
+                   AVG(confidence) as avg_confidence,
+                   MIN(detection_time) as first_seen,
+                   MAX(detection_time) as last_seen
+            FROM detections 
+            WHERE camera_id = ? AND detection_time >= ?
+            GROUP BY object_class
+            ORDER BY count DESC
+        """, (camera_id, since))
+        
+        detections = await cursor.fetchall()
+        
+        return {
+            "camera_id": camera_id,
+            "period_hours": hours,
+            "since": since.isoformat(),
+            "detection_summary": [
+                {
+                    "object_class": d['object_class'],
+                    "count": d['count'],
+                    "avg_confidence": round(d['avg_confidence'], 3),
+                    "first_seen": d['first_seen'],
+                    "last_seen": d['last_seen']
+                }
+                for d in detections
+            ],
+            "total_detections": sum(d['count'] for d in detections)
+        }
+
 @app.get("/api/system/health")
 async def get_system_health():
     """Get system health status"""
@@ -1165,7 +1358,9 @@ async def get_system_health():
         "service": "RetailIQ Analytics",
         "version": "2.0.0",
         "database": "connected",
-        "yolo_model": "loaded" if model else "error"
+        "yolo_model": "loaded" if model else "error",
+        "opencv_available": CV2_AVAILABLE,
+        "yolo_available": YOLO_AVAILABLE
     }
 
 if __name__ == "__main__":

@@ -69,27 +69,31 @@ def get_yolo_model():
             os.environ['DISPLAY'] = ':99'
             os.environ['OPENCV_VIDEOIO_DEBUG'] = '1'
             
-            # Import YOLO on first use
-            from ultralytics import YOLO
-            YOLO_AVAILABLE = True
-            
-            # Try to load local model first, fallback to download
-            model_path = '/app/yolov8n.pt'
-            if not os.path.exists(model_path):
-                logger.info("Local YOLO model not found, downloading...")
-                model = YOLO('yolov8n.pt')  # This will download automatically
-            else:
-                model = YOLO(model_path)
+            # Try to import YOLO - this will be None initially to save space
+            try:
+                from ultralytics import YOLO
+                YOLO_AVAILABLE = True
                 
-            logger.info("✅ YOLO model loaded successfully")
-        except ImportError as e:
-            logger.warning(f"⚠️ YOLO not available: {e}")
-            YOLO_AVAILABLE = False
-            model = "failed"
+                # Try to load local model first, fallback to download
+                model_path = '/app/yolov8n.pt'
+                if not os.path.exists(model_path):
+                    logger.info("Local YOLO model not found, downloading...")
+                    model = YOLO('yolov8n.pt')  # This will download automatically
+                else:
+                    model = YOLO(model_path)
+                    
+                logger.info("✅ YOLO model loaded successfully")
+            except ImportError:
+                logger.warning("⚠️ Ultralytics not installed - YOLO detection disabled")
+                logger.info("📊 Running in analytics-only mode with manual visitor data")
+                YOLO_AVAILABLE = False
+                model = "not_available"
+                
         except Exception as e:
             logger.error(f"❌ Failed to load YOLO model: {e}")
+            YOLO_AVAILABLE = False
             model = "failed"
-    return model if model != "failed" else None
+    return model if model not in ["failed", "not_available"] else None
 
 def get_opencv():
     """Lazy load OpenCV to avoid startup crashes"""

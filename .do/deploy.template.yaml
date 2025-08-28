@@ -1,0 +1,64 @@
+# DigitalOcean App Platform Configuration - FIXED VERSION
+# Forces Docker deployment instead of Heroku buildpack
+
+name: retail-analytics-backend
+region: nyc
+
+services:
+- name: api
+  source_dir: /
+  github:
+    repo: mj-112358/retail-analytics-final
+    branch: main
+    deploy_on_push: true
+  
+  # FORCE DOCKER BUILD (not Heroku buildpack)
+  dockerfile_path: Dockerfile.digitalocean
+  
+  # Resource configuration - start small
+  instance_count: 1
+  instance_size_slug: basic-xs  # $12/month - sufficient for testing
+  
+  # Health check
+  health_check:
+    http_path: /health
+    initial_delay_seconds: 120  # Give more time for startup
+    period_seconds: 30
+    timeout_seconds: 15
+    success_threshold: 1
+    failure_threshold: 3
+  
+  # Environment variables - REPLACE WITH YOUR ACTUAL VALUES
+  envs:
+  - key: ENVIRONMENT
+    value: production
+  - key: DATABASE_URL
+    scope: RUN_AND_BUILD_TIME
+    value: ${db.DATABASE_URL}
+  - key: OPENAI_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+    value: "your-openai-api-key-here"
+  - key: JWT_SECRET_KEY
+    scope: RUN_TIME
+    type: SECRET  
+    value: "3ngfxh){,96P$byppEE;gd!tr2|V_/.qR6:WWt[|S{Tx]*sv;i-*cY&[,*w#cT@g"
+  - key: CORS_ORIGINS
+    value: "https://your-frontend.vercel.app,https://your-domain.com"
+  - key: LOG_LEVEL
+    value: INFO
+  
+  # HTTP configuration
+  http_port: 8080
+  
+  # Routes
+  routes:
+  - path: /
+
+# Database configuration
+databases:
+- name: db
+  engine: PG
+  version: "15"
+  size: basic-xs  # $15/month
+  num_nodes: 1

@@ -1,26 +1,25 @@
-# Git
+# DOCKERIGNORE - Keep image size minimal
+# Exclude unnecessary files from Docker context
+
 .git
 .gitignore
-.gitattributes
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.env
+.venv
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Documentation
-README*.md
-*.md
-DEPLOYMENT_GUIDE.md
-INTEGRATION_GUIDE.md
-BUSINESS_READINESS_CHECKLIST.md
-AXIOS_INTEGRATION_GUIDE.md
-PRODUCTION_DEPLOYMENT.md
-PROJECT_SUMMARY.md
-FINAL_COMPREHENSIVE_REPORT.md
+# Node.js
+node_modules/
+npm-debug.log*
 
-# Development files
-.env.local
-.env.development
-.env.test
-# .env and .env.production needed for Docker builds
-
-# IDE
+# IDEs
 .vscode/
 .idea/
 *.swp
@@ -29,54 +28,53 @@ FINAL_COMPREHENSIVE_REPORT.md
 
 # OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
-# Logs
-*.log
+# Heroku
+.heroku/
+
+# Media files
+.media/
+.models/
+data/
 logs/
-footfall_log.jsonl
-
-# Temporary files
-*.tmp
-*.temp
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-.Python
-*.so
-
-# Node.js (for frontend)
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Build artifacts
-dist/
-build/
-*.egg-info/
-
-# Docker
-Dockerfile*
-docker-compose*
-.dockerignore
-
-# Heroku specific
-Procfile
-Aptfile
-app.json
-heroku_requirements.txt
-heroku_api_server.py
-
-# Large files that should be downloaded at runtime
-# yolov8n.pt  # Uncomment if you want to exclude the model file
+*.log
 
 # Test files
-tests/
-# test_*.py  # Commented out - some test files needed for production
+test_*.py
 *_test.py
+tests/
 
-# Backup files
-*.bak
-*.backup 
+# Documentation
+README.md
+*.md
+docs/
+
+# Heavy dependencies not needed for API
+requirements-worker.txt
+requirements.sqlalchemy.txt
+requirements.digitalocean.txt
+requirements.minimal.txt
+
+# Large model files
+*.pt
+*.onnx
+*.h5
+*.pb
+
+# Jupyter notebooks
+*.ipynb
+
+# Database files
+*.db
+*.sqlite3
+
+# Temporary files
+tmp/
+temp/
+*.tmp

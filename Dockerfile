@@ -1,37 +1,27 @@
-# PRODUCTION DOCKERFILE - SQLALCHEMY VERSION
-# Complete retail analytics with PostgreSQL and SQLAlchemy ORM
+# OPTIMIZED API-ONLY DOCKERFILE
+# Lightweight FastAPI backend without GPU dependencies
 
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV DEBIAN_FRONTEND=noninteractive
-
-WORKDIR /app
-
-# Install system dependencies optimized for DigitalOcean
+# Install only essential system dependencies (no CUDA)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
-    g++ \
     libpq-dev \
-    libglib2.0-0 \
-    libsm6 \
-    libxext6 \
     curl \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
-# Copy SQLAlchemy requirements
-COPY requirements.sqlalchemy.txt requirements.txt
+WORKDIR /app
+
+# Copy API-only requirements
+COPY requirements-api.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy SQLAlchemy application files
-COPY main_sqlalchemy.py main.py
+# Copy application files
+COPY main_api.py ./main.py
 COPY database.py .
 COPY models.py .
-COPY create_tables.py .
-COPY test_connection.py .
 
 # Create logs directory
 RUN mkdir -p /app/logs
@@ -40,8 +30,9 @@ RUN mkdir -p /app/logs
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
 
-# Expose port
-EXPOSE 8080
+# Use environment PORT variable
+ENV PORT=8080
+EXPOSE $PORT
 
 # Start command
-CMD ["sh", "-c", "python main.py --port ${PORT:-8080} --host 0.0.0.0"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]

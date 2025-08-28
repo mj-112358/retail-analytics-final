@@ -88,5 +88,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # Expose port (DigitalOcean will set PORT env var)
 EXPOSE 8080
 
-# Optimized startup command
+# Optimized startup command - DigitalOcean uses PORT environment variable
 CMD ["sh", "-c", "python main_digitalocean.py --port ${PORT:-8080} --host 0.0.0.0"]

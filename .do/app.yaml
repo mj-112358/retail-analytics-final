@@ -1,0 +1,135 @@
+# DigitalOcean App Platform Configuration
+# Production-ready retail analytics system deployment
+
+name: retail-analytics-backend
+region: nyc
+
+services:
+- name: api
+  source_dir: /
+  github:
+    repo: your-github-username/retail-analytics-final-main
+    branch: main
+    deploy_on_push: true
+  
+  # Build configuration
+  build_command: |
+    echo "Building retail analytics system..."
+    pip install --no-cache-dir -r requirements.digitalocean.txt
+  
+  # Run configuration  
+  run_command: |
+    python main_digitalocean.py --host 0.0.0.0 --port $PORT
+  
+  dockerfile_path: Dockerfile.digitalocean
+  
+  # Resource configuration
+  instance_count: 1
+  instance_size_slug: basic-xxs  # Start small, can scale up
+  
+  # Health check
+  health_check:
+    http_path: /health
+    initial_delay_seconds: 60
+    period_seconds: 30
+    timeout_seconds: 10
+    success_threshold: 1
+    failure_threshold: 3
+  
+  # Environment variables
+  envs:
+  - key: ENVIRONMENT
+    value: production
+  - key: DATABASE_URL
+    scope: RUN_AND_BUILD_TIME
+    value: ${db.DATABASE_URL}
+  - key: OPENAI_API_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: JWT_SECRET_KEY
+    scope: RUN_TIME
+    type: SECRET
+  - key: CORS_ORIGINS
+    value: "https://your-frontend.vercel.app,https://your-domain.com"
+  - key: LOG_LEVEL
+    value: INFO
+  - key: MAX_WORKERS
+    value: "1"
+  
+  # HTTP configuration
+  http_port: 8080
+  
+  # Routes
+  routes:
+  - path: /
+  - path: /api
+  - path: /health
+  - path: /docs
+
+# Database configuration
+databases:
+- name: db
+  engine: PG
+  version: "15"
+  size: basic-xs  # Start with smallest DB, can scale
+  num_nodes: 1
+  
+# Static sites (if you want to move frontend here too)
+# static_sites:
+# - name: frontend
+#   github:
+#     repo: your-github-username/retail-analytics-frontend
+#     branch: main
+#     deploy_on_push: true
+#   build_command: npm run build
+#   output_dir: /dist
+#   index_document: index.html
+#   error_document: 404.html
+#   routes:
+#   - path: /
+#   envs:
+#   - key: REACT_APP_API_URL
+#     value: ${api.PUBLIC_URL}
+
+# Jobs (for periodic tasks)
+jobs:
+- name: cleanup-job
+  source_dir: /
+  github:
+    repo: your-github-username/retail-analytics-final-main
+    branch: main
+  
+  run_command: |
+    python -c "
+    import asyncio
+    from database_cleanup import cleanup_old_data
+    asyncio.run(cleanup_old_data())
+    "
+  
+  schedule: "0 2 * * *"  # Run daily at 2 AM
+  
+  envs:
+  - key: DATABASE_URL
+    scope: RUN_TIME
+    value: ${db.DATABASE_URL}
+
+# Workers (for background processing)
+workers:
+- name: rtsp-processor
+  source_dir: /
+  github:
+    repo: your-github-username/retail-analytics-final-main
+    branch: main
+    
+  run_command: |
+    python background_processor.py
+    
+  instance_count: 1
+  instance_size_slug: basic-xs
+  
+  envs:
+  - key: DATABASE_URL
+    scope: RUN_TIME
+    value: ${db.DATABASE_URL}
+  - key: WORKER_TYPE
+    value: rtsp_processor
